@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.sqlite3
+*.tar.gz
+*.zip
+.git/
+.gitignore
+data/
+logs/
+proj.tar.gz
+
