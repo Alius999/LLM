@@ -18,6 +18,15 @@ BITUNIX_API_PATH="/api/v1/market/tickers"
 BITUNIX_WS_HOST="ws.bitunix.com"
 
 NUM_PINGS=3
+HTTP_ONLY=0
+
+for arg in "$@"; do
+  case "$arg" in
+    --http-only)
+      HTTP_ONLY=1
+      ;;
+  esac
+done
 
 cyan()  { printf "\033[36m%s\033[0m\n" "$*"; }
 green() { printf "\033[32m%s\033[0m\n" "$*"; }
@@ -27,8 +36,24 @@ test_icmp() {
   local host="$1"
   cyan "[ICMP] ping $host ($NUM_PINGS packets)"
   if command -v ping >/dev/null 2>&1; then
-    # -n numeric, -c count
-    ping -n -c "$NUM_PINGS" "$host" | sed 's/^/  /'
+    # Skip on request
+    if [ "$HTTP_ONLY" = "1" ]; then
+      echo "  skipped (--http-only)"
+      return 0
+    fi
+    # Detect Linux/Mac vs Windows ping syntax
+    if ping -c 1 127.0.0.1 >/dev/null 2>&1; then
+      # Unix-like: -n numeric, -c count
+      ping -n -c "$NUM_PINGS" "$host" | sed 's/^/  /'
+    else
+      # Windows ping (Git Bash uses Windows ping.exe): -n count
+      # Перекодируем OEM CP866 -> UTF-8, если iconv доступен
+      if command -v iconv >/dev/null 2>&1; then
+        ping -n "$NUM_PINGS" "$host" | iconv -f CP866 -t UTF-8 2>/dev/null | sed 's/^/  /'
+      else
+        ping -n "$NUM_PINGS" "$host" | sed 's/^/  /'
+      fi
+    fi
   else
     red "ping not found"
   fi
