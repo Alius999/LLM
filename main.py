@@ -9,12 +9,23 @@ from src.bybit_collector import BybitDataCollector
 from utils.logging_setup import setup_logging
 
 
+def _chunk_list(items: List[str], chunk_size: int) -> List[List[str]]:
+    return [items[i : i + chunk_size] for i in range(0, len(items), chunk_size)]
+
+
 async def run(symbols: List[str], category: str = "spot", db_path: str = "data/bybit_data.sqlite3") -> None:
     setup_logging(logging.INFO)
     logger = logging.getLogger("main")
 
     db = SQLiteClient(db_path)
-    collector = BybitDataCollector(symbols=symbols, db_client=db, category=category, depth_level=200)
+
+    # Split symbols across multiple WS connections to improve stability
+    max_symbols_per_ws = int(os.environ.get("MAX_SYMBOLS_PER_WS", "5"))
+    symbol_groups = _chunk_list(symbols, max_symbols_per_ws) if symbols else []
+    collectors = [
+        BybitDataCollector(symbols=group, db_client=db, category=category, depth_level=200)
+        for group in symbol_groups
+    ]
 
     loop = asyncio.get_running_loop()
 
@@ -32,8 +43,14 @@ async def run(symbols: List[str], category: str = "spot", db_path: str = "data/b
         # Signal handlers may not be available on some platforms (e.g., Windows)
         pass
 
-    logger.info("Starting BybitDataCollector for symbols: %s (category=%s)", ", ".join(symbols), category)
-    producer = asyncio.create_task(collector.start())
+    logger.info(
+        "Starting %d WS workers (max %d symbols/WS) for symbols: %s (category=%s)",
+        len(collectors),
+        max_symbols_per_ws,
+        ", ".join(symbols),
+        category,
+    )
+    producers = [asyncio.create_task(c.start()) for c in collectors]
 
     try:
         # Wait until stop_event is set
@@ -42,10 +59,12 @@ async def run(symbols: List[str], category: str = "spot", db_path: str = "data/b
         # Loop shutdown (e.g., Ctrl+C). Proceed to graceful cleanup.
         logger.info("Cancellation received. Shutting down...")
     finally:
-        if not producer.done():
-            producer.cancel()
+        for p in producers:
+            if not p.done():
+                p.cancel()
+        for p in producers:
             try:
-                await producer
+                await p
             except asyncio.CancelledError:
                 pass
         db.close()
