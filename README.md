@@ -60,5 +60,19 @@ By default, it will connect to Bybit Spot public WebSocket (`wss://stream.bybit.
 - Only widely-used libraries are used: `websockets` and standard library modules `sqlite3`, `json`, `logging`, `asyncio`.
 - Data volume can be high for order book updates. SQLite settings are tuned for reliability; for production-grade throughput, consider batching or PostgreSQL.
 
+### ML (optional)
+- Install extra deps (separately from runtime):
+```bash
+python -m pip install -r requirements-ml.txt
+```
+- Build dataset from `features_1s` with targets (example: last 48h, all symbols):
+```bash
+python scripts/build_dataset.py --db data/bybit_linear.sqlite3 --out data/ml/dataset.parquet --start "2025-09-28 00:00:00" --end "2025-09-30 00:00:00"
+```
+- Train baselines (logreg + XGBoost) for 1s horizon:
+```bash
+python scripts/train_baseline.py --data data/ml/dataset.parquet --out data/ml/models --horizon 1
+```
+
 
 # LLM
