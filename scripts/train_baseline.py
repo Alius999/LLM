@@ -7,7 +7,8 @@ import joblib
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import classification_report
-from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import Pipeline
 from xgboost import XGBClassifier
 
 
@@ -51,10 +52,19 @@ def train_baseline(parquet_path: str, out_dir: str, horizon: int) -> None:
     X_val, y_val = val[features], val[target_col]
     X_test, y_test = test[features], test[target_col]
 
+    # Map targets {-1,0,1} -> {0,1,2} for XGBoost multiclass
+    label_map = {-1: 0, 0: 1, 1: 2}
+    y_train_m = y_train.map(label_map).astype(int)
+    y_val_m = y_val.map(label_map).astype(int)
+    y_test_m = y_test.map(label_map).astype(int)
+
     os.makedirs(out_dir, exist_ok=True)
 
-    # Baseline 1: Logistic Regression
-    lr = LogisticRegression(max_iter=200, n_jobs=1)
+    # Baseline 1: Logistic Regression (scaled, balanced, more iters)
+    lr = Pipeline([
+        ("scaler", StandardScaler()),
+        ("clf", LogisticRegression(max_iter=1000, class_weight="balanced", multi_class="auto", solver="lbfgs")),
+    ])
     lr.fit(X_train, y_train)
     y_pred = lr.predict(X_test)
     print("LogReg report (test):\n", classification_report(y_test, y_pred, digits=3))
@@ -67,11 +77,16 @@ def train_baseline(parquet_path: str, out_dir: str, horizon: int) -> None:
         learning_rate=0.05,
         subsample=0.9,
         colsample_bytree=0.9,
+        objective="multi:softprob",
+        num_class=3,
         eval_metric="mlogloss",
         n_jobs=2,
     )
-    xgb.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
-    y_pred = xgb.predict(X_test)
+    xgb.fit(X_train, y_train_m, eval_set=[(X_val, y_val_m)], verbose=False)
+    y_pred_m = xgb.predict(X_test)
+    # Map back {0,1,2}->{-1,0,1}
+    inv_map = {0: -1, 1: 0, 2: 1}
+    y_pred = pd.Series(y_pred_m).map(inv_map)
     print("XGB report (test):\n", classification_report(y_test, y_pred, digits=3))
     joblib.dump(xgb, os.path.join(out_dir, f"xgb_{horizon}s.joblib"))
 
