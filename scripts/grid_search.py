@@ -30,17 +30,21 @@ def load_dataset(db_path: str, start: str, end: str, symbols: list[str] | None, 
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
     q = f"""
-    SELECT timestamp, symbol, mid, spread, trade_count, volume_total, volume_buy, volume_sell, order_flow_imbalance AS ofi, vwap,
-           mid_ema_3s, mid_ema_5s, mid_ema_10s,
-           mid_ret_3s, mid_ret_5s, mid_ret_10s,
-           vola_3s, vola_5s, vola_10s,
-           ofi_sum_3s, ofi_sum_5s, ofi_sum_10s,
-           tc_sum_3s, tc_sum_5s, tc_sum_10s
+    SELECT timestamp, symbol, mid, spread, trade_count, volume_total, volume_buy, volume_sell, order_flow_imbalance AS ofi, vwap
     FROM features_1s
     {where_sql}
     ORDER BY timestamp ASC
     """
     df = pd.read_sql_query(q, conn, params=params)
+
+    # rolling features (compute in-memory; DB не содержит этих колонок)
+    for w in (3, 5, 10):
+        grp = df.groupby("symbol")
+        df[f"mid_ema_{w}s"] = grp["mid"].transform(lambda s: s.ewm(span=w, adjust=False).mean())
+        df[f"mid_ret_{w}s"] = grp["mid"].transform(lambda s: s.pct_change(periods=w))
+        df[f"vola_{w}s"] = grp["mid"].transform(lambda s: s.pct_change().rolling(w).std())
+        df[f"ofi_sum_{w}s"] = grp["ofi"].transform(lambda s: s.rolling(w, min_periods=1).sum())
+        df[f"tc_sum_{w}s"] = grp["trade_count"].transform(lambda s: s.rolling(w, min_periods=1).sum())
 
     # build targets with deadzone
     for horizon_s in (1, 3, 5):
