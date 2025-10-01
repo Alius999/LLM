@@ -13,7 +13,14 @@ def to_ms(dt_str: str) -> int:
     return int(dt.timestamp() * 1000)
 
 
-def build_dataset(db_path: str, out_path: str, start: str | None, end: str | None, symbols: list[str] | None) -> None:
+def build_dataset(
+    db_path: str,
+    out_path: str,
+    start: str | None,
+    end: str | None,
+    symbols: list[str] | None,
+    deadzone_bps: float = 0.0,
+) -> None:
     conn = sqlite3.connect(db_path)
     where = []
     params: list[object] = []
@@ -45,15 +52,33 @@ def build_dataset(db_path: str, out_path: str, start: str | None, end: str | Non
 
     # Targets: sign of future mid change at +1s, +3s, +5s
     for horizon_s in (1, 3, 5):
-        col = f"target_sign_dmid_{horizon_s}s"
-        df[col] = (df.groupby("symbol")["mid"].shift(-horizon_s) - df["mid"]).apply(
-            lambda x: 1 if x is not None and x > 0 else (-1 if x is not None and x < 0 else 0)
-        )
+        future_mid = df.groupby("symbol")["mid"].shift(-horizon_s)
+        dmid = future_mid - df["mid"]
+        if deadzone_bps > 0:
+            # Deadzone в базисных пунктах от текущего mid: |Δmid| < deadzone → 0
+            threshold = (deadzone_bps / 1e4) * df["mid"].abs()
+            label = dmid.apply(
+                lambda x: 0 if x is None else (1 if x > 0 else (-1 if x < 0 else 0))
+            )
+            # уже 0 для ==0; теперь притиснем малые |Δ| к 0
+            label[(dmid.abs() < threshold)] = 0
+        else:
+            label = dmid.apply(lambda x: 1 if x is not None and x > 0 else (-1 if x is not None and x < 0 else 0))
+        df[f"target_sign_dmid_{horizon_s}s"] = label
 
     # Drop rows with NaN mids or targets at the tail
     df = df.dropna(subset=["mid"]).reset_index(drop=True)
     for horizon_s in (1, 3, 5):
         df = df[df[f"target_sign_dmid_{horizon_s}s"].notna()]
+
+    # Rolling features (3s, 5s, 10s)
+    for w in (3, 5, 10):
+        grp = df.groupby("symbol")
+        df[f"mid_ema_{w}s"] = grp["mid"].transform(lambda s: s.ewm(span=w, adjust=False).mean())
+        df[f"mid_ret_{w}s"] = grp["mid"].transform(lambda s: s.pct_change(periods=w))
+        df[f"vola_{w}s"] = grp["mid"].transform(lambda s: s.pct_change().rolling(w).std())
+        df[f"ofi_sum_{w}s"] = grp["ofi"].transform(lambda s: s.rolling(w, min_periods=1).sum())
+        df[f"tc_sum_{w}s"] = grp["trade_count"].transform(lambda s: s.rolling(w, min_periods=1).sum())
 
     # Save to parquet
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
@@ -68,10 +93,11 @@ def main() -> None:
     ap.add_argument("--start", default=None, help="Start time (e.g., 2025-09-27 00:00:00 UTC)")
     ap.add_argument("--end", default=None, help="End time (UTC)")
     ap.add_argument("--symbols", default=None, help="Comma-separated symbols filter")
+    ap.add_argument("--deadzone_bps", type=float, default=0.0, help="Deadzone threshold in bps for 0-class (e.g., 1.0)")
     args = ap.parse_args()
 
     symbols = [s.strip().upper() for s in args.symbols.split(",")] if args.symbols else None
-    build_dataset(args.db, args.out, args.start, args.end, symbols)
+    build_dataset(args.db, args.out, args.start, args.end, symbols, deadzone_bps=float(args.deadzone_bps))
 
 
 if __name__ == "__main__":
