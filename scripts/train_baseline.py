@@ -26,9 +26,13 @@ def time_split(df: pd.DataFrame, test_days: int = 1, val_days: int = 1):
     return train, val, test
 
 
-def train_baseline(parquet_path: str, out_dir: str, horizon: int, binary: bool = False) -> None:
+def _hcol(h: float) -> str:
+    return f"target_sign_dmid_{int(h) if float(h).is_integer() else h}s"
+
+
+def train_baseline(parquet_path: str, out_dir: str, horizon: float, binary: bool = False) -> None:
     df = pd.read_parquet(parquet_path)
-    target_col = f"target_sign_dmid_{horizon}s"
+    target_col = _hcol(horizon)
     features = [
         "mid",
         "spread",
@@ -126,11 +130,11 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Train baseline models on dataset")
     ap.add_argument("--data", default="data/ml/dataset.parquet", help="Parquet dataset path")
     ap.add_argument("--out", default="data/ml/models", help="Output models dir")
-    ap.add_argument("--horizon", type=int, default=1, choices=[1, 3, 5], help="Target horizon seconds")
+    ap.add_argument("--horizon", type=float, default=1.0, help="Target horizon seconds (e.g., 0.5, 1, 2, 3)")
     ap.add_argument("--binary", action="store_true", help="Train binary classifier (drops 0 class)")
     args = ap.parse_args()
 
-    train_baseline(args.data, args.out, args.horizon, binary=bool(args.binary))
+    train_baseline(args.data, args.out, float(args.horizon), binary=bool(args.binary))
 
 
 if __name__ == "__main__":
