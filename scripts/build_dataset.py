@@ -20,6 +20,7 @@ def build_dataset(
     end: str | None,
     symbols: list[str] | None,
     deadzone_bps: float = 0.0,
+    horizons: list[int] | None = None,
 ) -> None:
     conn = sqlite3.connect(db_path)
     where = []
@@ -50,8 +51,10 @@ def build_dataset(
     if df.empty:
         raise SystemExit("No rows in selected range. Adjust --start/--end or symbols.")
 
-    # Targets: sign of future mid change at +1s, +3s, +5s
-    for horizon_s in (1, 3, 5):
+    # Targets: sign of future mid change at requested horizons
+    if not horizons:
+        horizons = [1, 3, 5]
+    for horizon_s in horizons:
         future_mid = df.groupby("symbol")["mid"].shift(-horizon_s)
         dmid = future_mid - df["mid"]
         if deadzone_bps > 0:
@@ -72,11 +75,11 @@ def build_dataset(
         df = df[df[f"target_sign_dmid_{horizon_s}s"].notna()]
 
     # Rolling features (3s, 5s, 10s)
-    for w in (3, 5, 10):
+    for w in (3, 5, 10, 15, 30, 60):
         grp = df.groupby("symbol")
         df[f"mid_ema_{w}s"] = grp["mid"].transform(lambda s: s.ewm(span=w, adjust=False).mean())
-        df[f"mid_ret_{w}s"] = grp["mid"].transform(lambda s: s.pct_change(periods=w))
-        df[f"vola_{w}s"] = grp["mid"].transform(lambda s: s.pct_change().rolling(w).std())
+        df[f"mid_ret_{w}s"] = grp["mid"].transform(lambda s: s.pct_change(periods=w, fill_method=None))
+        df[f"vola_{w}s"] = grp["mid"].transform(lambda s: s.pct_change(fill_method=None).rolling(w).std())
         df[f"ofi_sum_{w}s"] = grp["ofi"].transform(lambda s: s.rolling(w, min_periods=1).sum())
         df[f"tc_sum_{w}s"] = grp["trade_count"].transform(lambda s: s.rolling(w, min_periods=1).sum())
 
@@ -94,10 +97,20 @@ def main() -> None:
     ap.add_argument("--end", default=None, help="End time (UTC)")
     ap.add_argument("--symbols", default=None, help="Comma-separated symbols filter")
     ap.add_argument("--deadzone_bps", type=float, default=0.0, help="Deadzone threshold in bps for 0-class (e.g., 1.0)")
+    ap.add_argument("--horizons", default="1,3,5", help="Comma-separated horizons in seconds, e.g. '3,5,10,30,60'")
     args = ap.parse_args()
 
     symbols = [s.strip().upper() for s in args.symbols.split(",")] if args.symbols else None
-    build_dataset(args.db, args.out, args.start, args.end, symbols, deadzone_bps=float(args.deadzone_bps))
+    horizons = [int(x) for x in args.horizons.split(",") if x]
+    build_dataset(
+        args.db,
+        args.out,
+        args.start,
+        args.end,
+        symbols,
+        deadzone_bps=float(args.deadzone_bps),
+        horizons=horizons,
+    )
 
 
 if __name__ == "__main__":
