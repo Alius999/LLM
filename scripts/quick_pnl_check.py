@@ -49,6 +49,8 @@ def run_case(
     min_abs_ofi: float | None = None,
     min_volume_total: float | None = None,
     min_trade_count: int | None = None,
+    val_days: int = 1,
+    test_days: int = 1,
 ) -> Tuple[float, float, float, float, float, int, float]:
     """
     Train XGB on train/val, evaluate on test with a fixed classification threshold,
@@ -73,8 +75,8 @@ def run_case(
     drop_cols = [c for c in data.columns if c.startswith("target_sign_dmid_") or c in ["timestamp", "symbol"]]
     X = data.drop(columns=drop_cols, errors="ignore")
 
-    # Time split: 1 day for validation, 1 day for test
-    tr, va, te = time_split(data, val_days=1, test_days=1)
+    # Time split: configurable days for validation and test
+    tr, va, te = time_split(data, val_days=val_days, test_days=test_days)
 
     # Class imbalance handling
     pos = (y.loc[tr.index] == 1).sum()
@@ -261,6 +263,18 @@ def main() -> None:
         default=None,
         help="Min trade count for trade entry (filter)",
     )
+    parser.add_argument(
+        "--val_days",
+        type=int,
+        default=1,
+        help="Number of days for validation window in time split",
+    )
+    parser.add_argument(
+        "--test_days",
+        type=int,
+        default=1,
+        help="Number of days for test window in time split",
+    )
     args = parser.parse_args()
 
     df = pd.read_parquet(args.data).dropna().sort_values("timestamp")
@@ -284,6 +298,8 @@ def main() -> None:
                 min_abs_ofi=args.min_abs_ofi,
                 min_volume_total=args.min_volume_total,
                 min_trade_count=args.min_trade_count,
+                val_days=args.val_days,
+                test_days=args.test_days,
             )
             print(
                 "h={:.1f}s thr={:.2f} | selected={:.1%} trades={} | precision={:.3f} recall={:.3f} f1={:.3f} | avg_pnl_per_trade={:.2f} bps".format(
