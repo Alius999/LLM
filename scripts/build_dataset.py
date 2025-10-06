@@ -5,6 +5,7 @@ import sqlite3
 from datetime import datetime, timezone
 
 import pandas as pd
+import numpy as np
 
 
 def to_ms(dt_str: str) -> int:

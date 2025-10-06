@@ -43,15 +43,14 @@ test_icmp() {
     fi
     # Detect Linux/Mac vs Windows ping syntax
     if ping -c 1 127.0.0.1 >/dev/null 2>&1; then
-      # Unix-like: -n numeric, -c count
-      ping -n -c "$NUM_PINGS" "$host" | sed 's/^/  /'
+      # Unix-like: -n numeric, -c count; don't fail script on loss
+      { ping -n -c "$NUM_PINGS" "$host" || true; } | sed 's/^/  /'
     else
-      # Windows ping (Git Bash uses Windows ping.exe): -n count
-      # Перекодируем OEM CP866 -> UTF-8, если iconv доступен
+      # Windows ping (Git Bash uses Windows ping.exe): -n count; don't fail on loss
       if command -v iconv >/dev/null 2>&1; then
-        ping -n "$NUM_PINGS" "$host" | iconv -f CP866 -t UTF-8 2>/dev/null | sed 's/^/  /'
+        { ping -n "$NUM_PINGS" "$host" || true; } | iconv -f CP866 -t UTF-8 2>/dev/null | sed 's/^/  /'
       else
-        ping -n "$NUM_PINGS" "$host" | sed 's/^/  /'
+        { ping -n "$NUM_PINGS" "$host" || true; } | sed 's/^/  /'
       fi
     fi
   else

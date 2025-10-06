@@ -6,8 +6,12 @@ from typing import Tuple
 from xgboost import XGBClassifier
 from sklearn.metrics import precision_recall_fscore_support
 
-# Reuse time-based split from training utilities
-from scripts.train_baseline import time_split
+# Reuse time-based split from training utilities (sibling module)
+try:
+    from train_baseline import time_split  # when running as `python scripts/quick_pnl_check.py`
+except ModuleNotFoundError:
+    # Fallback if executed differently and package path is expected
+    from scripts.train_baseline import time_split  # type: ignore
 
 
 def compute_forward_return(series_mid: pd.Series, horizon_seconds: float) -> pd.Series:

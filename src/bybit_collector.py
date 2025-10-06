@@ -32,6 +32,7 @@ class BybitDataCollector:
         category: str = "spot",
         depth_level: int = 50,
         reconnect_delay_seconds: float = 3.0,
+        name_suffix: str = "",
     ) -> None:
         if category not in self.CATEGORY_TO_URL:
             raise ValueError(f"Unsupported category: {category}")
@@ -44,7 +45,8 @@ class BybitDataCollector:
         self._reconnect_delay_seconds = reconnect_delay_seconds
         self._running = False
 
-        self._logger = logging.getLogger(self.__class__.__name__)
+        logger_name = f"{self.__class__.__name__}{name_suffix}" if name_suffix else self.__class__.__name__
+        self._logger = logging.getLogger(logger_name)
         self._orderbook_saved = 0
         self._trades_saved = 0
         self._ticker_saved = 0
