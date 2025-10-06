@@ -45,6 +45,10 @@ def run_case(
     tune_min: float = 0.50,
     tune_max: float = 0.90,
     tune_steps: int = 21,
+    max_spread_bps: float | None = None,
+    min_abs_ofi: float | None = None,
+    min_volume_total: float | None = None,
+    min_trade_count: int | None = None,
 ) -> Tuple[float, float, float, float, float, int, float]:
     """
     Train XGB on train/val, evaluate on test with a fixed classification threshold,
@@ -100,7 +104,24 @@ def run_case(
     ret_val = compute_forward_return(data.loc[va.index, "mid"], horizon_seconds)
     ret_test = compute_forward_return(data.loc[te.index, "mid"], horizon_seconds)
 
-    # Threshold tuning on validation to maximize total PnL
+    # Build filter masks for validation and test (entry filters)
+    def build_filter(mask_index: pd.Index) -> np.ndarray:
+        filt = np.ones(len(mask_index), dtype=bool)
+        if max_spread_bps is not None:
+            spread_bps = (data.loc[mask_index, "spread"] / data.loc[mask_index, "mid"]) * 1e4
+            filt &= spread_bps.values <= float(max_spread_bps)
+        if min_abs_ofi is not None and "ofi" in data.columns:
+            filt &= np.abs(data.loc[mask_index, "ofi"].values) >= float(min_abs_ofi)
+        if min_volume_total is not None and "volume_total" in data.columns:
+            filt &= data.loc[mask_index, "volume_total"].values >= float(min_volume_total)
+        if min_trade_count is not None and "trade_count" in data.columns:
+            filt &= data.loc[mask_index, "trade_count"].values >= int(min_trade_count)
+        return filt
+
+    filt_val = build_filter(va.index)
+    filt_test = build_filter(te.index)
+
+    # Threshold tuning on validation to maximize total PnL (with filters)
     commission = commission_bps_roundtrip / 10000.0
     best_thr = threshold
     if tune_threshold or threshold is None:
@@ -109,9 +130,12 @@ def run_case(
         best_thr_local = None
         for thr in thr_grid:
             if mode == "ls":
-                sig_val = np.where(p_val >= thr, 1, np.where(p_val <= 1 - thr, -1, 0))
+                sig_val_raw = np.where(p_val >= thr, 1, np.where(p_val <= 1 - thr, -1, 0))
+                sig_val = sig_val_raw.copy()
+                sig_val[~filt_val] = 0
             else:
                 sig_val = (p_val >= thr).astype(int)
+                sig_val[~filt_val] = 0
             trade_mask_val = sig_val != 0
             pnl_val = sig_val * ret_val - (commission * trade_mask_val.astype(int))
             total_pnl_val = float(pnl_val.sum())
@@ -127,15 +151,20 @@ def run_case(
     # Build signal on test with chosen threshold and mode
     if mode == "ls":
         signal = np.where(p_test >= best_thr, 1, np.where(p_test <= 1 - best_thr, -1, 0))
+        signal[~filt_test] = 0
     else:
         signal = (p_test >= best_thr).astype(int)
+        signal[~filt_test] = 0
 
     trade_mask = signal != 0
     pnl = signal * ret_test - (commission * trade_mask.astype(int))
 
     # Classification metrics (binary, positive class = 1)
+    # For metrics in long-only: positive prediction only when threshold AND filters pass
+    y_pred_bin = (p_test >= best_thr).astype(int)
+    y_pred_bin[~filt_test] = 0
     precision, recall, f1, _ = precision_recall_fscore_support(
-        y.loc[te.index], (p_test >= best_thr).astype(int), average="binary", zero_division=0
+        y.loc[te.index], y_pred_bin, average="binary", zero_division=0
     )
 
     selected_share = float(trade_mask.mean())
@@ -207,6 +236,31 @@ def main() -> None:
         default=21,
         help="Number of thresholds in tuning grid",
     )
+    # Entry filters
+    parser.add_argument(
+        "--max_spread_bps",
+        type=float,
+        default=None,
+        help="Max allowed spread in bps for trade entry (filter)",
+    )
+    parser.add_argument(
+        "--min_abs_ofi",
+        type=float,
+        default=None,
+        help="Min absolute OFI for trade entry (filter)",
+    )
+    parser.add_argument(
+        "--min_volume_total",
+        type=float,
+        default=None,
+        help="Min total volume for trade entry (filter)",
+    )
+    parser.add_argument(
+        "--min_trade_count",
+        type=int,
+        default=None,
+        help="Min trade count for trade entry (filter)",
+    )
     args = parser.parse_args()
 
     df = pd.read_parquet(args.data).dropna().sort_values("timestamp")
@@ -226,6 +280,10 @@ def main() -> None:
                 tune_min=args.th_min,
                 tune_max=args.th_max,
                 tune_steps=args.th_steps,
+                max_spread_bps=args.max_spread_bps,
+                min_abs_ofi=args.min_abs_ofi,
+                min_volume_total=args.min_volume_total,
+                min_trade_count=args.min_trade_count,
             )
             print(
                 "h={:.1f}s thr={:.2f} | selected={:.1%} trades={} | precision={:.3f} recall={:.3f} f1={:.3f} | avg_pnl_per_trade={:.2f} bps".format(
