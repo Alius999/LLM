@@ -147,29 +147,52 @@ def train_and_simulate(
         y.loc[te.index], y_pred_bin, average="binary", zero_division=0
     )
 
-    # Build trade log (only executed entries)
+    # Build trade log (only executed entries) — align by position to avoid mask length mismatches
     test_df = data.loc[te.index].copy()
-    trades_mask = signal != 0
-    trades = pd.DataFrame(
-        {
-            "timestamp": test_df.index.to_series().reset_index(drop=True),
-            "prob_up": pd.Series(p_test),
-            "signal": pd.Series(signal),
-            "mid": test_df["mid"].reset_index(drop=True),
-            "spread": test_df.get("spread").reset_index(drop=True) if "spread" in test_df.columns else np.nan,
-            "ofi": test_df.get("ofi").reset_index(drop=True) if "ofi" in test_df.columns else np.nan,
-            "volume_total": test_df.get("volume_total").reset_index(drop=True)
-            if "volume_total" in test_df.columns
-            else np.nan,
-            "trade_count": test_df.get("trade_count").reset_index(drop=True)
-            if "trade_count" in test_df.columns
-            else np.nan,
-            "fwd_return": pd.Series(ret_test),
-            "pnl_bps": pd.Series(pnl * 1e4),
-            "passed_filters": pd.Series(filt_test.astype(int)),
-        }
-    )
-    trades = trades[trades_mask].reset_index(drop=True)
+    trades_mask = (signal != 0)
+    if trades_mask.any():
+        idx = np.flatnonzero(trades_mask)
+        # Base arrays
+        ts = test_df.index.values
+        mid_arr = test_df["mid"].to_numpy()
+        spread_arr = test_df["spread"].to_numpy() if "spread" in test_df.columns else np.full(len(test_df), np.nan)
+        ofi_arr = test_df["ofi"].to_numpy() if "ofi" in test_df.columns else np.full(len(test_df), np.nan)
+        vol_arr = (
+            test_df["volume_total"].to_numpy() if "volume_total" in test_df.columns else np.full(len(test_df), np.nan)
+        )
+        tc_arr = test_df["trade_count"].to_numpy() if "trade_count" in test_df.columns else np.full(len(test_df), np.nan)
+
+        trades = pd.DataFrame(
+            {
+                "timestamp": ts[idx],
+                "prob_up": p_test[idx],
+                "signal": signal[idx],
+                "mid": mid_arr[idx],
+                "spread": spread_arr[idx],
+                "ofi": ofi_arr[idx],
+                "volume_total": vol_arr[idx],
+                "trade_count": tc_arr[idx],
+                "fwd_return": pd.Series(ret_test).to_numpy()[idx],
+                "pnl_bps": (pnl * 1e4)[idx],
+                "passed_filters": filt_test.astype(int)[idx],
+            }
+        ).reset_index(drop=True)
+    else:
+        trades = pd.DataFrame(
+            columns=[
+                "timestamp",
+                "prob_up",
+                "signal",
+                "mid",
+                "spread",
+                "ofi",
+                "volume_total",
+                "trade_count",
+                "fwd_return",
+                "pnl_bps",
+                "passed_filters",
+            ]
+        )
 
     summary = {
         "used_threshold": float(best_thr),
