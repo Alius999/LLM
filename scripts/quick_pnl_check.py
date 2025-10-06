@@ -40,7 +40,12 @@ def run_case(
     threshold: float,
     commission_bps_roundtrip: float,
     n_jobs: int = 4,
-) -> Tuple[float, float, float, float, float, int]:
+    mode: str = "long",
+    tune_threshold: bool = False,
+    tune_min: float = 0.50,
+    tune_max: float = 0.90,
+    tune_steps: int = 21,
+) -> Tuple[float, float, float, float, float, int, float]:
     """
     Train XGB on train/val, evaluate on test with a fixed classification threshold,
     compute long-only PnL after subtracting round-trip commission.
@@ -89,29 +94,55 @@ def run_case(
 
     # Predictions on test
     p_test = clf.predict_proba(X.loc[te.index])[:, 1]
-
-    # Long-only signal based on threshold
-    signal = (p_test >= threshold).astype(int)
+    p_val = clf.predict_proba(X.loc[va.index])[:, 1]
 
     # Forward return on horizon
-    ret_h = compute_forward_return(data.loc[te.index, "mid"], horizon_seconds)
+    ret_val = compute_forward_return(data.loc[va.index, "mid"], horizon_seconds)
+    ret_test = compute_forward_return(data.loc[te.index, "mid"], horizon_seconds)
 
-    # Round-trip commission in decimal
+    # Threshold tuning on validation to maximize total PnL
     commission = commission_bps_roundtrip / 10000.0
+    best_thr = threshold
+    if tune_threshold or threshold is None:
+        thr_grid = np.linspace(tune_min, tune_max, tune_steps)
+        best_pnl = -np.inf
+        best_thr_local = None
+        for thr in thr_grid:
+            if mode == "ls":
+                sig_val = np.where(p_val >= thr, 1, np.where(p_val <= 1 - thr, -1, 0))
+            else:
+                sig_val = (p_val >= thr).astype(int)
+            trade_mask_val = sig_val != 0
+            pnl_val = sig_val * ret_val - (commission * trade_mask_val.astype(int))
+            total_pnl_val = float(pnl_val.sum())
+            if total_pnl_val > best_pnl:
+                best_pnl = total_pnl_val
+                best_thr_local = float(thr)
+        if best_thr_local is not None:
+            best_thr = best_thr_local
+    # Fall back if still None
+    if best_thr is None:
+        best_thr = 0.5
+
+    # Build signal on test with chosen threshold and mode
+    if mode == "ls":
+        signal = np.where(p_test >= best_thr, 1, np.where(p_test <= 1 - best_thr, -1, 0))
+    else:
+        signal = (p_test >= best_thr).astype(int)
 
     trade_mask = signal != 0
-    pnl = signal * ret_h - (commission * trade_mask.astype(int))
+    pnl = signal * ret_test - (commission * trade_mask.astype(int))
 
     # Classification metrics (binary, positive class = 1)
     precision, recall, f1, _ = precision_recall_fscore_support(
-        y.loc[te.index], (p_test >= threshold).astype(int), average="binary", zero_division=0
+        y.loc[te.index], (p_test >= best_thr).astype(int), average="binary", zero_division=0
     )
 
     selected_share = float(trade_mask.mean())
     num_trades = int(trade_mask.sum())
     avg_pnl_per_trade_bps = float((pnl[trade_mask].mean() * 1e4) if num_trades > 0 else 0.0)
 
-    return selected_share, precision, recall, f1, avg_pnl_per_trade_bps, num_trades
+    return selected_share, precision, recall, f1, avg_pnl_per_trade_bps, num_trades, best_thr
 
 
 def main() -> None:
@@ -134,30 +165,87 @@ def main() -> None:
         default=4,
         help="Parallel threads for XGBoost",
     )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        choices=["long", "ls"],
+        default="long",
+        help="Signal mode: long-only ('long') or long-short symmetric ('ls')",
+    )
+    parser.add_argument(
+        "--horizon",
+        type=float,
+        default=None,
+        help="Optional single horizon to run (overrides presets). If set, use --thr or --tune",
+    )
+    parser.add_argument(
+        "--thr",
+        type=float,
+        default=None,
+        help="Classification threshold. If omitted with --tune, it will be tuned on validation",
+    )
+    parser.add_argument(
+        "--tune",
+        action="store_true",
+        help="Enable threshold tuning on validation to maximize total PnL",
+    )
+    parser.add_argument(
+        "--th_min",
+        type=float,
+        default=0.50,
+        help="Min threshold for tuning grid",
+    )
+    parser.add_argument(
+        "--th_max",
+        type=float,
+        default=0.90,
+        help="Max threshold for tuning grid",
+    )
+    parser.add_argument(
+        "--th_steps",
+        type=int,
+        default=21,
+        help="Number of thresholds in tuning grid",
+    )
     args = parser.parse_args()
 
     df = pd.read_parquet(args.data).dropna().sort_values("timestamp")
 
-    cases = [
-        (0.5, 0.80),  # horizon=0.5s, threshold=0.80
-        (1.0, 0.50),  # horizon=1.0s, threshold=0.50
-        (2.0, 0.50),  # horizon=2.0s, threshold=0.50
-    ]
+    print(f"Dataset: {args.data}  rows={len(df)}  commission={args.comm_bps} bps  mode={args.mode}\n")
 
-    print(f"Dataset: {args.data}  rows={len(df)}  commission={args.comm_bps} bps\n")
-
-    for horizon_seconds, threshold in cases:
+    def run_and_print(h: float, thr: float | None, tune: bool) -> None:
         try:
-            selected, prec, rec, f1, avg_pnl_bps, n_trades = run_case(
-                df, horizon_seconds, threshold, args.comm_bps, n_jobs=args.n_jobs
+            selected, prec, rec, f1, avg_pnl_bps, n_trades, used_thr = run_case(
+                df,
+                h,
+                thr,
+                args.comm_bps,
+                n_jobs=args.n_jobs,
+                mode=args.mode,
+                tune_threshold=tune,
+                tune_min=args.th_min,
+                tune_max=args.th_max,
+                tune_steps=args.th_steps,
             )
             print(
                 "h={:.1f}s thr={:.2f} | selected={:.1%} trades={} | precision={:.3f} recall={:.3f} f1={:.3f} | avg_pnl_per_trade={:.2f} bps".format(
-                    horizon_seconds, threshold, selected, n_trades, prec, rec, f1, avg_pnl_bps
+                    h, used_thr, selected, n_trades, prec, rec, f1, avg_pnl_bps
                 )
             )
         except Exception as e:
-            print(f"h={horizon_seconds}s thr={threshold:.2f} | ERROR: {e}")
+            thr_txt = "auto" if (thr is None and tune) else ("{:.2f}".format(thr) if thr is not None else "?")
+            print(f"h={h}s thr={thr_txt} | ERROR: {e}")
+
+    if args.horizon is not None:
+        run_and_print(args.horizon, args.thr, args.tune)
+    else:
+        cases = [
+            (0.5, 0.80),  # horizon=0.5s, threshold=0.80
+            (1.0, 0.50),  # horizon=1.0s, threshold=0.50
+            (2.0, 0.50),  # horizon=2.0s, threshold=0.50
+        ]
+        for horizon_seconds, threshold in cases:
+            run_and_print(horizon_seconds, threshold, args.tune)
 
 
 if __name__ == "__main__":
