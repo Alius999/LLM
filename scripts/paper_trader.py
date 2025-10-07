@@ -173,7 +173,7 @@ def train_and_simulate(
                 "volume_total": vol_arr[idx],
                 "trade_count": tc_arr[idx],
                 "fwd_return": pd.Series(ret_test).to_numpy()[idx],
-                "pnl_bps": (pnl * 1e4)[idx],
+                "pnl_bps": (pd.Series(pnl).to_numpy() * 1e4)[idx],
                 "passed_filters": filt_test.astype(int)[idx],
             }
         ).reset_index(drop=True)

@@ -10,7 +10,7 @@ docker compose logs -f
 Снова смотреть логи: docker compose logs -f
 ls -lh data/bybit_linear.sqlite3
 
-
+source .venv-ml/bin/activate
 
 clyde_lantrip117@gmx.us
 waOfAh1jklx
